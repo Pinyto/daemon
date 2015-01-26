@@ -49,6 +49,24 @@ class BackofficeInterface(dbus.service.Object):
         mainloop.quit()
 
 
+class AssemblyCallInterface(dbus.service.Object):
+    @dbus.service.method("de.pinyto.daemon.api",
+                         in_signature='ssss', out_signature='s')
+    def ApiCall(self, assembly_username, assembly_name, function_name, data):
+        if not connected:
+            return json.dumps({'error': 'No connection to the cloud.'})
+        data_dict = json.loads(data)
+        data_dict['token'] = token
+        data = json.dumps(data_dict)
+        response = requests.post(
+            cloud_url + assembly_username + '/' + assembly_name + '/' + function_name,
+            data=data, headers={'content-type': 'application/json'})
+        if response.status_code != 200:
+            return json.dumps({'error': 'Unable to connect to the cloud. The daemon is authenticated but ' +
+                                        'the request returned the error code: ' + response.status_code})
+        return response.text
+
+
 def generate_key():
     key = RSA.generate(3072, Random.new().read)
     key_data = {
@@ -181,7 +199,7 @@ def authenticate_at_cloud():
         user_cipher = PKCS1_OAEP.new(key)
         real_token = user_cipher.decrypt(b16decode(encrypted_token))
         pinyto_cipher = PKCS1_OAEP.new(pinyto_public_key)
-        authentication_token = b16encode(pinyto_cipher.encrypt(real_token))
+        authentication_token = str(b16encode(pinyto_cipher.encrypt(real_token)), encoding='utf-8')
         return True, authentication_token
     if 'error' in authenticate_response_json:
         return False, authenticate_response_json['error']
@@ -209,6 +227,7 @@ if __name__ == '__main__':
     session_bus = dbus.SessionBus()
     name = dbus.service.BusName("de.pinyto.daemon", session_bus)
     backoffice_interface = BackofficeInterface(session_bus, '/Backoffice')
+    assembly_call_interface = AssemblyCallInterface(session_bus, '/Assembly')
 
     token_from_keyserver = False
     connected, token = authenticate_at_cloud()
