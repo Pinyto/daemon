@@ -218,8 +218,13 @@ def try_to_connect():
     return False
 
 
-# Settings
-cloud_url = 'https://pinyto.de/'
+# Load Settings
+home = expanduser("~")
+try:
+    with open(home + '/.pinyto/cloud_url', mode='r') as url_file:
+        cloud_url = ''.join(url_file.read().split())
+except FileNotFoundError:
+    cloud_url = 'https://pinyto.de/'
 
 if __name__ == '__main__':
     DBusGMainLoop(set_as_default=True)
