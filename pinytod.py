@@ -3,16 +3,34 @@ import dbus
 from dbus.service import BusName
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GObject
-from Crypto import Random
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_OAEP
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes
+from cryptography.exceptions import InvalidSignature
 from hashlib import sha256
-from base64 import b16decode, b16encode
+from base64 import b64decode, b64encode
 from os.path import expanduser
 import requests
 import json
 import os
 import sys
+
+
+PINYTO_PUBLIC_KEY = rsa.RSAPublicNumbers(
+    65537,
+    int("7829487815098536540163340882101624716263699124284776727331856400402012605068617607074848020780929263286" +
+        "1777371795066320667094273729808501496067021755785325385319270032155555860380403694273039781832166222574" +
+        "0982623746713760050717491720444401365859377904761509456912858624197383009910897359227163603168055069076" +
+        "2988650388634810877021897370043618319224015852080391715109009180201275625896119513840827703345319162546" +
+        "4956424352483465726648149599154639222100356593400640583898292902042777225273667494325059986268195514181" +
+        "6261927004696811927915492285857001606967204165474930842200356404798932927527349880460038664735604799615" +
+        "6575351492978859740957294904746191106691211687301808176923284964142198110073079545921504748367207486987" +
+        "3816642503072179364939244345082744417171570594851345415294043745634023662066627610259775478034263984167" +
+        "9047815006824885208959469459587070768606268964437819028000766288835526004124480298771987405845901023717" +
+        "0023812712182602254669659406038944136636863318312128196609065625793814435451291091924867897181456040979" +
+        "3979413614936337848290374830746444999167778857351617508196024135490271644440537219056271178956203994401" +
+        "1689062773834284439722273182150964910834681668991726977737508228377398684622376557220679678700827641")
+).public_key(default_backend())
 
 
 class DemoException(dbus.DBusException):
@@ -68,14 +86,16 @@ class AssemblyCallInterface(dbus.service.Object):
 
 
 def generate_key():
-    key = RSA.generate(3072, Random.new().read)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=4096, backend=default_backend())
     key_data = {
-        'N': str(key.n),
-        'e': key.e,
-        'd': str(key.d)
+        'N': str(key.public_key().public_numbers().n),
+        'e': key.public_key().public_numbers().e,
+        'd': str(key.private_numbers().d),
+        'p': str(key.private_numbers().p),
+        'q': str(key.private_numbers().q)
     }
     hasher = sha256()
-    hasher.update((str(key.n) + str(key.e)).encode('utf-8'))
+    hasher.update((key_data['N'] + str(key_data['e'])).encode('utf-8'))
     key_data['hash'] = hasher.hexdigest()[:10]
     return key_data
 
@@ -177,29 +197,40 @@ def authenticate_at_cloud():
     authenticate_response_json = authenticate_response.json()
     if 'encrypted_token' in authenticate_response_json and 'signature' in authenticate_response_json:
         encrypted_token = authenticate_response_json['encrypted_token']
-        signature = (int(authenticate_response_json['signature']),)
-        hasher = sha256()
-        hasher.update(encrypted_token.encode('utf-8'))
-        pinyto_public_key = RSA.construct((
-            int("352338828109401093003984019495831935971782553824939880555182746966856089430233286534546578391626413" +
-                "889711944870759073912120837972163560539068302721433441470599319461830662743105237366621489460749807" +
-                "064695106317511851649828802426144511321407267371613900315155373702173982644362916496126265649482466" +
-                "673875349489907047908512127914975432839016239992366271779549922103338911663557549622535507034970312" +
-                "887582031790221065308884097203719721616172747651142792797058845232091562500374024618481921283765146" +
-                "459067479963822779551936787918661317227947726850380461998140456287231079109312171798861513513789080" +
-                "346324162225532044317709266220083319146995607428104864657690958344956798558928659127626778976913687" +
-                "922038630858294674378500969405467193853683891419773979306334712430415320754994796575136923208255925" +
-                "000108833432201573577913512113607190233763574663786408344944398826274620266607863472810162138551510" +
-                "9353596589585237881665906747589713"),
-            65537))
-        if not pinyto_public_key.verify(hasher.hexdigest().encode('utf-8'), signature):
+        signature = b64decode(authenticate_response_json['signature'].encode('utf-8'))
+        verifier = PINYTO_PUBLIC_KEY.verifier(
+            signature,
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+            hashes.SHA256()
+        )
+        verifier.update(encrypted_token.encode('utf-8'))
+        try:
+            verifier.verify()
+        except InvalidSignature:
             print('Pinyto-Cloud signature is wrong. This is a man-in-the-middle-attack!')
             sys.exit(1)
-        key = RSA.construct((int(key_data['N']), int(key_data['e']), int(key_data['d'])))
-        user_cipher = PKCS1_OAEP.new(key)
-        real_token = user_cipher.decrypt(b16decode(encrypted_token))
-        pinyto_cipher = PKCS1_OAEP.new(pinyto_public_key)
-        authentication_token = str(b16encode(pinyto_cipher.encrypt(real_token)), encoding='utf-8')
+        public_numbers = rsa.RSAPublicNumbers(key_data['e'], int(key_data['N']))
+        p = int(key_data['p'])
+        q = int(key_data['q'])
+        d = int(key_data['d'])
+        dmp1 = rsa.rsa_crt_dmp1(key_data['e'], p)
+        dmq1 = rsa.rsa_crt_dmq1(key_data['e'], q)
+        iqmp = rsa.rsa_crt_iqmp(p, q)
+        key = rsa.RSAPrivateNumbers(p, q, d, dmp1, dmq1, iqmp, public_numbers).private_key(default_backend())
+        token = key.decrypt(
+            b64decode(encrypted_token.encode('utf-8')),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA1()),
+                algorithm=hashes.SHA1(),
+                label=None)
+        )
+        authentication_token = str(b64encode(PINYTO_PUBLIC_KEY.encrypt(
+            token,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA1()),
+                algorithm=hashes.SHA1(),
+                label=None)
+        )), encoding='utf-8')
         return True, authentication_token
     if 'error' in authenticate_response_json:
         return False, authenticate_response_json['error']

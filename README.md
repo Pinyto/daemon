@@ -10,7 +10,7 @@ pinytod uses Python3. Please make sure Python3 is installed on your system.
 
 * DBus (pip3 install dbus)
 * requests (pip3 install requests)
-* pyCrypto (pip3 install crypto)
+* cryptography (pip3 install cryptography)
 
 Installation
 ============
